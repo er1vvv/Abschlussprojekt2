@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🎯 Reflexions-Radar v5.4.4</title>
+    <title>🎯 Reflexions-Radar v5.4.5</title>
     <style>
         :root {
             --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -28,14 +28,9 @@
         .btn.active { background: rgba(76,175,80,0.3); border-color: #4CAF50; }
         .stat { color: white; font-size: 12px; background: rgba(0,0,0,0.4); padding: 6px 10px; border-radius: 12px; border: 1px solid var(--glass-border); font-weight: 600; }
         
-        /* Zoom Controls */
-        .zoom-controls { display: flex; gap: 5px; align-items: center; margin-left: 15px; }
-        .zoom-btn { min-width: 40px; padding: 6px 10px; font-size: 16px; }
-        .zoom-level { color: white; font-size: 13px; font-weight: 600; min-width: 50px; text-align: center; }
-        
         #canvas { position: absolute; top: 70px; left: 0; right: 0; bottom: 0; overflow: hidden; background: radial-gradient(circle at 50% 50%, rgba(255,255,255,0.05) 0%, transparent 70%); cursor: grab; }
         #canvas.panning { cursor: grabbing; }
-        #canvasContent { transform-origin: 0 0; transition: transform 0.3s ease; position: relative; width: 100%; height: 100%; }
+        #canvasContent { transform-origin: 0 0; position: relative; width: 100%; height: 100%; }
         #connectionsSvg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; }
         #connectionsSvg line { stroke-width: 4; stroke-linecap: round; opacity: 0.85; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3)); }
         .connection-emoji { position: absolute; font-size: 24px; background: linear-gradient(145deg, rgba(0,0,0,0.95), rgba(0,0,0,0.85)); border-radius: 50%; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 5; transform: translate(-50%, -50%); border: 3px solid rgba(255,255,255,0.6); transition: all 0.3s ease; box-shadow: 0 4px 15px rgba(0,0,0,0.5); backdrop-filter: blur(15px); pointer-events: auto; }
@@ -146,7 +141,7 @@
 </head>
 <body>
     <div class="header">
-        <h1>🎯 Reflexions-Radar v5.4.4</h1>
+        <h1>🎯 Reflexions-Radar v5.4.5</h1>
         <div class="header-buttons">
             <button class="btn" id="btnUndo" disabled>↶</button>
             <button class="btn" id="btnRedo" disabled>↷</button>
@@ -155,12 +150,6 @@
             <button class="btn" id="btnShowSessions">📁 Sessions</button>
             <button class="btn" id="btnToggleReflexions">📝 Historie</button>
             <button class="btn" id="btnReset">🔄 Reset</button>
-        </div>
-        <div class="zoom-controls">
-            <button class="btn zoom-btn" id="btnZoomOut">➖</button>
-            <div class="zoom-level" id="zoomLevel">100%</div>
-            <button class="btn zoom-btn" id="btnZoomIn">➕</button>
-            <button class="btn zoom-btn" id="btnZoomReset">⊙</button>
         </div>
         <div class="header-stats">
             <div class="stat">👥 <span id="memberCount">0</span></div>
@@ -413,7 +402,7 @@
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <script>
-const APP_VERSION="5.4.4";
+const APP_VERSION="5.4.5";
 
 // Core State
 let members=[],connections=[],snapshots=[],reflexionAnswers=[],sessions=[],history=[],historyIndex=-1;
@@ -426,14 +415,12 @@ let isPlaying=false,playInterval=null;
 let currentReflexionCategory=null,currentReflexionIndex=0,currentQuestionType=null,currentScalingValue=5;
 let thermometerPos={top:90,right:20};
 
-// Zoom & Pan State
-let zoomLevel = 1.0;
+// Pan State
 let panOffset = {x: 0, y: 0};
 let isPanning = false;
 let panStart = {x: 0, y: 0};
-let spacePressed = false;
-const ZOOM_LEVELS = [0.5, 0.75, 1.0, 1.5, 2.0];
-let currentZoomIndex = 2; // Start at 100%
+let rightClickTimer = null;
+let isLongPress = false;
 
 // Auto-Save State
 let autoSaveTimer = null;
@@ -504,7 +491,7 @@ function init(){
         snapshots.push({id:Date.now(),name:"Ausgangssituation",timestamp:new Date().toLocaleString('de-DE'),members:[],connections:[]});
     }
     setupEventListeners();
-    applyZoom();
+    applyPan();
     render();
 }
 
@@ -517,11 +504,6 @@ function setupEventListeners(){
     document.getElementById('btnShowSessions').onclick=showSessionModal;
     document.getElementById('btnToggleReflexions').onclick=toggleReflexionsPanel;
     document.getElementById('btnReset').onclick=resetApp;
-    
-    // Zoom buttons
-    document.getElementById('btnZoomIn').onclick=zoomIn;
-    document.getElementById('btnZoomOut').onclick=zoomOut;
-    document.getElementById('btnZoomReset').onclick=zoomReset;
     
     // Thermometer
     document.getElementById('thermometerToggle').onclick=(e)=>{e.stopPropagation();toggleThermometer();};
@@ -536,60 +518,41 @@ function setupEventListeners(){
         }
     };
     
-    // Canvas interactions
+    // Canvas interactions - NEW PAN LOGIC
     const canvas=document.getElementById('canvas');
-    canvas.oncontextmenu=(e)=>{
-        e.preventDefault();
-        const rect=canvas.getBoundingClientRect();
-        canvasClickPos={
-            x:(e.clientX-rect.left-panOffset.x)/zoomLevel,
-            y:(e.clientY-rect.top-panOffset.y)/zoomLevel
-        };
-        showContextMenu('canvasContextMenu',e.clientX,e.clientY);
-    };
     
-    // Canvas panning
     canvas.onmousedown=(e)=>{
-        if(e.button===1 || (e.button===0 && spacePressed)){
+        // Left click - check if on member or empty space
+        if(e.button===0){
+            // This will be handled by member's onmousedown
+            return;
+        }
+        
+        // Right click - pan or context menu
+        if(e.button===2){
             e.preventDefault();
+            isLongPress=false;
+            
+            rightClickTimer=setTimeout(()=>{
+                isLongPress=true;
+                const rect=canvas.getBoundingClientRect();
+                canvasClickPos={
+                    x:(e.clientX-rect.left-panOffset.x),
+                    y:(e.clientY-rect.top-panOffset.y)
+                };
+                showContextMenu('canvasContextMenu',e.clientX,e.clientY);
+            },500);
+            
             isPanning=true;
             panStart={x:e.clientX-panOffset.x, y:e.clientY-panOffset.y};
             canvas.classList.add('panning');
         }
     };
     
-    // Mouse wheel zoom
-    canvas.addEventListener('wheel',(e)=>{
+    canvas.oncontextmenu=(e)=>{
         e.preventDefault();
-        if(e.deltaY<0){
-            zoomIn();
-        }else{
-            zoomOut();
-        }
-    },{passive:false});
-    
-    // Double click reset
-    canvas.addEventListener('dblclick',(e)=>{
-        if(!e.target.closest('.member') && !e.target.closest('.connection-emoji')){
-            zoomReset();
-        }
-    });
-    
-    // Space key for panning
-    document.addEventListener('keydown',(e)=>{
-        if(e.code==='Space' && !e.target.matches('input, textarea')){
-            e.preventDefault();
-            spacePressed=true;
-            canvas.style.cursor='grab';
-        }
-    });
-    
-    document.addEventListener('keyup',(e)=>{
-        if(e.code==='Space'){
-            spacePressed=false;
-            canvas.style.cursor='grab';
-        }
-    });
+        return false;
+    };
     
     // Context menus
     document.querySelectorAll('#canvasContextMenu .context-item').forEach(el=>{
@@ -679,7 +642,7 @@ function setupEventListeners(){
     
     document.getElementById('btnCloseColorSelector').onclick=hideColorSelector;
     
-    // Reflexion Modal - NEW AUTO-SAVE LOGIC
+    // Reflexion Modal - AUTO-SAVE LOGIC
     document.getElementById('btnNextReflexion').onclick=nextReflexion;
     document.getElementById('btnOtherCategory').onclick=otherCategory;
     document.getElementById('btnCloseReflexionModal').onclick=()=>{
@@ -733,36 +696,12 @@ function setupEventListeners(){
     document.addEventListener('mouseup',onMouseUp);
 }
 
-// ========== ZOOM & PAN FUNCTIONS ==========
+// ========== PAN FUNCTIONS ==========
 
-function applyZoom(){
+function applyPan(){
     const content=document.getElementById('canvasContent');
-    content.style.transform=`translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomLevel})`;
-    document.getElementById('zoomLevel').textContent=Math.round(zoomLevel*100)+'%';
+    content.style.transform=`translate(${panOffset.x}px, ${panOffset.y}px)`;
     saveToLocalStorage();
-}
-
-function zoomIn(){
-    if(currentZoomIndex<ZOOM_LEVELS.length-1){
-        currentZoomIndex++;
-        zoomLevel=ZOOM_LEVELS[currentZoomIndex];
-        applyZoom();
-    }
-}
-
-function zoomOut(){
-    if(currentZoomIndex>0){
-        currentZoomIndex--;
-        zoomLevel=ZOOM_LEVELS[currentZoomIndex];
-        applyZoom();
-    }
-}
-
-function zoomReset(){
-    currentZoomIndex=2;
-    zoomLevel=1.0;
-    panOffset={x:0,y:0};
-    applyZoom();
 }
 
 function onMouseMove(e){
@@ -777,7 +716,7 @@ function onMouseMove(e){
     if(isPanning){
         panOffset.x=e.clientX-panStart.x;
         panOffset.y=e.clientY-panStart.y;
-        applyZoom();
+        applyPan();
         return;
     }
     
@@ -785,11 +724,11 @@ function onMouseMove(e){
         const canvas=document.getElementById('canvas');
         const canvasRect=canvas.getBoundingClientRect();
         
-        let newX=(e.clientX-canvasRect.left-panOffset.x)/zoomLevel-dragOffset.x;
-        let newY=(e.clientY-canvasRect.top-panOffset.y)/zoomLevel-dragOffset.y;
+        let newX=(e.clientX-canvasRect.left-panOffset.x)-dragOffset.x;
+        let newY=(e.clientY-canvasRect.top-panOffset.y)-dragOffset.y;
         
-        newX=Math.max(0,Math.min(newX,canvasRect.width/zoomLevel-100));
-        newY=Math.max(0,Math.min(newY,canvasRect.height/zoomLevel-100));
+        newX=Math.max(0,Math.min(newX,canvasRect.width-100));
+        newY=Math.max(0,Math.min(newY,canvasRect.height-100));
         
         draggedMember.x=newX;
         draggedMember.y=newY;
@@ -798,6 +737,11 @@ function onMouseMove(e){
 }
 
 function onMouseUp(e){
+    if(rightClickTimer){
+        clearTimeout(rightClickTimer);
+        rightClickTimer=null;
+    }
+    
     if(draggedThermometer){
         document.getElementById('stressThermometer').classList.remove('dragging');
         draggedThermometer=false;
@@ -936,8 +880,8 @@ function startDrag(e,member,element){
     element.classList.add('dragging');
     const rect=element.getBoundingClientRect();
     const canvas=document.getElementById('canvas').getBoundingClientRect();
-    dragOffset.x=(rect.left-canvas.left-panOffset.x)/zoomLevel-member.x;
-    dragOffset.y=(rect.top-canvas.top-panOffset.y)/zoomLevel-member.y;
+    dragOffset.x=(rect.left-canvas.left-panOffset.x)-member.x;
+    dragOffset.y=(rect.top-canvas.top-panOffset.y)-member.y;
 }
 
 function updateStats(){
@@ -1202,7 +1146,6 @@ function displayCurrentReflexion(){
         document.getElementById('reflexionQuestion').textContent=question;
         document.getElementById('reflexionInput').innerHTML='<textarea id="reflexionAnswer" rows="4" placeholder="Deine Gedanken und Erkenntnisse..."></textarea>';
         
-        // Setup auto-save for text
         setupTextAutoSave();
         
     }else if(currentQuestionType==='scaling'){
@@ -1222,11 +1165,9 @@ function displayCurrentReflexion(){
         document.getElementById('reflexionQuestion').textContent=question;
         document.getElementById('reflexionInput').innerHTML='<textarea id="reflexionAnswer" rows="4" placeholder="Was würde sich konkret ändern?"></textarea>';
         
-        // Setup auto-save for text
         setupTextAutoSave();
     }
     
-    // Store current draft
     currentReflexionDraft={
         category:catData.name,
         categoryColor:catData.color,
@@ -1242,7 +1183,7 @@ function setupTextAutoSave(){
             clearTimeout(autoSaveTimer);
             autoSaveTimer=setTimeout(()=>{
                 autoSaveCurrentReflexion();
-            },2000); // 2 seconds debounce
+            },2000);
         };
     }
 }
@@ -1257,7 +1198,6 @@ function selectScaling(value){
         }
     });
     
-    // Auto-save immediately on scaling selection
     autoSaveCurrentReflexion();
 }
 
@@ -1271,20 +1211,17 @@ function autoSaveCurrentReflexion(){
         const textarea=document.getElementById('reflexionAnswer');
         if(!textarea)return;
         answer=textarea.value;
-        if(!answer || !answer.trim())return; // Don't save empty answers
+        if(!answer || !answer.trim())return;
     }
     
-    // Check if already exists
     const existingIndex=reflexionAnswers.findIndex(r=>
         r.question===currentReflexionDraft.question && r.category===currentReflexionDraft.category
     );
     
     if(existingIndex>=0){
-        // Update existing
         reflexionAnswers[existingIndex].answer=answer;
         reflexionAnswers[existingIndex].timestamp=new Date().toLocaleString('de-DE');
     }else{
-        // Add new
         reflexionAnswers.push({
             category:currentReflexionDraft.category,
             categoryColor:currentReflexionDraft.categoryColor,
@@ -1946,6 +1883,8 @@ function resetApp(){
         currentSnapshotIndex=0;
         history=[];
         historyIndex=-1;
+        panOffset={x:0,y:0};
+        applyPan();
         render();
         saveToLocalStorage();
         showNotification('🔄 Reset!');
@@ -1965,7 +1904,6 @@ function saveToLocalStorage(){
         nextConnectionId:nextConnectionId,
         personCounter:personCounter,
         thermometerPos:thermometerPos,
-        zoomLevel:zoomLevel,
         panOffset:panOffset
     };
     localStorage.setItem('reflexionsRadar',JSON.stringify(data));
@@ -1986,11 +1924,6 @@ function loadFromLocalStorage(){
             personCounter=data.personCounter||1;
             thermometerPos=data.thermometerPos||{top:90,right:20};
             
-            if(data.zoomLevel){
-                zoomLevel=data.zoomLevel;
-                currentZoomIndex=ZOOM_LEVELS.indexOf(zoomLevel);
-                if(currentZoomIndex===-1)currentZoomIndex=2;
-            }
             if(data.panOffset){
                 panOffset=data.panOffset;
             }
